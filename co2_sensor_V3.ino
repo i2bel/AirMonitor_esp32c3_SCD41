@@ -38,11 +38,44 @@ unsigned long lastMqttPublish = 0;
 const unsigned long MQTT_INTERVAL = 60000; // 1 минута
 
 // Структура для хранения состояния одного массива
+
+
+struct HistoryPoint {
+  float value;
+  time_t time;
+};
+
 struct HistoryState {
   int index;
   int count;
   HistoryPoint data[HISTORY_SIZE];
 };
+
+
+
+// Текущие показания
+struct SensorData {
+  uint16_t co2 = 0;
+  float temperature = 0.0;
+  float humidity = 0.0;
+  unsigned long lastReading = 0;
+} currentData;
+
+// История с временными метками
+
+
+HistoryPoint co2History[HISTORY_SIZE];
+HistoryPoint tempHistory[HISTORY_SIZE];
+HistoryPoint humHistory[HISTORY_SIZE];
+
+int co2Index = 0, tempIndex = 0, humIndex = 0;
+int co2Count = 0, tempCount = 0, humCount = 0;
+
+float sumCO2 = 0, sumTemp = 0, sumHum = 0;
+int measurementCount = 0;
+unsigned long lastHistoryUpdate = 0;
+const unsigned long HISTORY_INTERVAL = 300000; // 5 минут
+
 
 // Сохраняем все три массива в файлы
 void saveHistoryToFS() {
@@ -78,73 +111,65 @@ void saveHistoryToFS() {
 
 // Загружаем массивы при старте
 void loadHistoryFromFS() {
+  File file;  // объявляем один раз
+
   // CO2
-  File file = LittleFS.open("/co2.bin", "r");
+  file = LittleFS.open("/co2.bin", "r");
   if (file) {
+    size_t fileSize = file.size();
+    Serial.printf("Found CO2 history file, size: %u bytes\n", fileSize);
     HistoryState co2State;
     if (file.read((uint8_t*)&co2State, sizeof(co2State)) == sizeof(co2State)) {
       co2Index = co2State.index;
       co2Count = co2State.count;
       memcpy(co2History, co2State.data, sizeof(co2History));
-      Serial.printf("Loaded CO2 history: %d points\n", co2Count);
+      Serial.printf("Loaded CO2 history: %d points (index: %d)\n", co2Count, co2Index);
+    } else {
+      Serial.println("Failed to read CO2 history file (size mismatch)");
     }
     file.close();
+  } else {
+    Serial.println("No CO2 history file found, starting fresh");
   }
 
   // Температура
   file = LittleFS.open("/temp.bin", "r");
   if (file) {
+    size_t fileSize = file.size();
+    Serial.printf("Found Temp history file, size: %u bytes\n", fileSize);
     HistoryState tempState;
     if (file.read((uint8_t*)&tempState, sizeof(tempState)) == sizeof(tempState)) {
       tempIndex = tempState.index;
       tempCount = tempState.count;
       memcpy(tempHistory, tempState.data, sizeof(tempHistory));
-      Serial.printf("Loaded Temp history: %d points\n", tempCount);
+      Serial.printf("Loaded Temp history: %d points (index: %d)\n", tempCount, tempIndex);
+    } else {
+      Serial.println("Failed to read Temp history file (size mismatch)");
     }
     file.close();
+  } else {
+    Serial.println("No Temp history file found, starting fresh");
   }
 
   // Влажность
   file = LittleFS.open("/hum.bin", "r");
   if (file) {
+    size_t fileSize = file.size();
+    Serial.printf("Found Hum history file, size: %u bytes\n", fileSize);
     HistoryState humState;
     if (file.read((uint8_t*)&humState, sizeof(humState)) == sizeof(humState)) {
       humIndex = humState.index;
       humCount = humState.count;
       memcpy(humHistory, humState.data, sizeof(humHistory));
-      Serial.printf("Loaded Hum history: %d points\n", humCount);
+      Serial.printf("Loaded Hum history: %d points (index: %d)\n", humCount, humIndex);
+    } else {
+      Serial.println("Failed to read Hum history file (size mismatch)");
     }
     file.close();
+  } else {
+    Serial.println("No Hum history file found, starting fresh");
   }
 }
-
-
-
-// Текущие показания
-struct SensorData {
-  uint16_t co2 = 0;
-  float temperature = 0.0;
-  float humidity = 0.0;
-  unsigned long lastReading = 0;
-} currentData;
-
-// История с временными метками
-struct HistoryPoint {
-  float value;
-  time_t time;
-};
-
-HistoryPoint co2History[HISTORY_SIZE];
-HistoryPoint tempHistory[HISTORY_SIZE];
-HistoryPoint humHistory[HISTORY_SIZE];
-
-int co2Index = 0, tempIndex = 0, humIndex = 0;
-int co2Count = 0, tempCount = 0, humCount = 0;
-
-float sumCO2 = 0, sumTemp = 0, sumHum = 0;
-int measurementCount = 0;
-unsigned long lastHistoryUpdate = 0;
-const unsigned long HISTORY_INTERVAL = 300000; // 5 минут
 
 // ================ ПРОТОТИПЫ ================
 bool initSensor();
@@ -187,33 +212,50 @@ bool initSensor() {
 
 bool readSensor() {
   static unsigned long lastMeasureTime = 0;
-  if (millis() - lastMeasureTime < 15000) return false;
+  static bool measurementStarted = false;
+  static unsigned long measurementStartTime = 0;
 
-  int16_t error = scd41.measureSingleShot();
-  if (error != 0) {
-    Serial.print("measureSingleShot error: 0x");
-    Serial.println(error, HEX);
-    return false;
-  }
-  delay(5000);
-
-  uint16_t co2;
-  float temp, hum;
-  error = scd41.readMeasurement(co2, temp, hum);
-  if (error != 0 || co2 == 0) {
-    Serial.println("readMeasurement failed or co2=0");
-    return false;
+  // Начинаем новое измерение раз в 30 секунд (или как у вас)
+  if (!measurementStarted && millis() - lastMeasureTime >= 30000) {
+    int16_t error = scd41.measureSingleShot();
+    if (error != 0) {
+      Serial.print("measureSingleShot error: 0x");
+      Serial.println(error, HEX);
+      return false;
+    }
+    measurementStarted = true;
+    measurementStartTime = millis();
+    return false; // данные ещё не готовы
   }
 
-  currentData.co2 = co2;
-  currentData.temperature = temp;
-  currentData.humidity = hum;
-  currentData.lastReading = millis();
-  lastMeasureTime = millis();
+  // Если измерение запущено, ждём 5 секунд, но не блокируя
+  if (measurementStarted) {
+    if (millis() - measurementStartTime < 5000) {
+      return false; // ещё не прошло 5 секунд
+    }
 
-  sumCO2 += co2; sumTemp += temp; sumHum += hum; measurementCount++;
-  Serial.printf("CO2: %d ppm, Temp: %.1f°C, Hum: %.1f%%\n", co2, temp, hum);
-  return true;
+    // 5 секунд прошло – читаем результат
+    uint16_t co2;
+    float temp, hum;
+    int16_t error = scd41.readMeasurement(co2, temp, hum);
+    measurementStarted = false;
+    lastMeasureTime = millis();
+
+    if (error != 0 || co2 == 0) {
+      Serial.println("readMeasurement failed or co2=0");
+      return false;
+    }
+
+    currentData.co2 = co2;
+    currentData.temperature = temp;
+    currentData.humidity = hum;
+
+    sumCO2 += co2; sumTemp += temp; sumHum += hum; measurementCount++;
+    Serial.printf("CO2: %d ppm, Temp: %.1f°C, Hum: %.1f%%\n", co2, temp, hum);
+    return true;
+  }
+
+  return false;
 }
 
 // ================ ДОБАВЛЕНИЕ В ИСТОРИЮ ================
@@ -425,7 +467,7 @@ void reconnectMQTT() {
   while (!mqttClient.connected()) {
     Serial.print("MQTT connect...");
     String clientId = "ESP32C3_" + deviceId;
-    if (mqttClient.connect(clientId.c_str(), mqttUser.c_str(), mqttPass.c_str())) {
+    if (mqttClient.connect(clientId.c_str(), mqttUser.c_str(), mqttPass.c_str(), nullptr, 0, false, nullptr, 120)) {
       Serial.println("connected");
       publishDiscoveryConfigs();
     } else {
@@ -1122,18 +1164,21 @@ void loop() {
     lastHistoryUpdate = millis();
   }
 
-  // MQTT
-  if (WiFi.status() == WL_CONNECTED && mqttServer.length() > 0) {
-    if (!mqttClient.connected()) {
-      reconnectMQTT();
-    } else {
-      mqttClient.loop();
-    }
-    if (millis() - lastMqttPublish >= MQTT_INTERVAL) {
-      publishMQTTData();
-      lastMqttPublish = millis();
-    }
+ 
+// MQTT
+if (WiFi.status() == WL_CONNECTED && mqttServer.length() > 0) {
+  if (!mqttClient.connected()) {
+    Serial.print("MQTT connection lost, reason: ");
+    Serial.println(mqttClient.state());
+    reconnectMQTT();
+  } else {
+    mqttClient.loop();
   }
+  if (millis() - lastMqttPublish >= MQTT_INTERVAL) {
+    publishMQTTData();
+    lastMqttPublish = millis();
+  }
+}
 
   // Проверка кнопки сброса
   static unsigned long pressStart = 0;
