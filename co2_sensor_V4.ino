@@ -91,37 +91,41 @@ void saveHistoryToFS();
 void loadHistoryFromFS();
 
 // ================ СОХРАНЕНИЕ ИСТОРИИ ================
+// Оптимизировано: одна статическая структура вместо трёх локальных
 void saveHistoryToFS() {
-  HistoryState co2State;
-  co2State.index = co2Index;
-  co2State.count = co2Count;
-  memcpy(co2State.data, co2History, sizeof(co2History));
+  static HistoryState state;  // Одна статическая структура для всех трёх типов
+  File file;
 
-  File file = LittleFS.open("/co2.bin", "w");
+  // ----- CO2 -----
+  state.index = co2Index;
+  state.count = co2Count;
+  memcpy(state.data, co2History, sizeof(co2History));
+
+  file = LittleFS.open("/co2.bin", "w");
   if (file) {
-    file.write((uint8_t*)&co2State, sizeof(co2State));
+    file.write((uint8_t*)&state, sizeof(state));
     file.close();
   }
 
-  HistoryState tempState;
-  tempState.index = tempIndex;
-  tempState.count = tempCount;
-  memcpy(tempState.data, tempHistory, sizeof(tempHistory));
+  // ----- Температура -----
+  state.index = tempIndex;
+  state.count = tempCount;
+  memcpy(state.data, tempHistory, sizeof(tempHistory));
 
   file = LittleFS.open("/temp.bin", "w");
   if (file) {
-    file.write((uint8_t*)&tempState, sizeof(tempState));
+    file.write((uint8_t*)&state, sizeof(state));
     file.close();
   }
 
-  HistoryState humState;
-  humState.index = humIndex;
-  humState.count = humCount;
-  memcpy(humState.data, humHistory, sizeof(humHistory));
+  // ----- Влажность -----
+  state.index = humIndex;
+  state.count = humCount;
+  memcpy(state.data, humHistory, sizeof(humHistory));
 
   file = LittleFS.open("/hum.bin", "w");
   if (file) {
-    file.write((uint8_t*)&humState, sizeof(humState));
+    file.write((uint8_t*)&state, sizeof(state));
     file.close();
   }
 
@@ -358,10 +362,10 @@ bool readSensor() {
     }
 
     currentData.co2 = co2;
-    currentData.temperature = temp + 3.0; // Калибровка
+    currentData.temperature = temp + 3.5; // Калибровка
     currentData.humidity = hum - 16;    // Калибровка
 
-    sumCO2 += currentData.co2; sumTemp += currentData.temperature; sumHum += currentData.humidity; measurementCount++; //калибровка
+    sumCO2 += currentData.co2; sumTemp += currentData.temperature; sumHum += currentData.humidity; measurementCount++;
     Serial.printf("CO2: %d ppm, Temp: %.1f°C, Hum: %.1f%%\n", currentData.co2, currentData.temperature, currentData.humidity);
     return true;
   }
@@ -552,10 +556,10 @@ void connectToWiFi() {
   }
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nConnected! IP: " + WiFi.localIP().toString());
-    // Первоначальная настройка NTP (не ждём синхронизации, просто инициируем)
+    // Первоначальная настройка NTP
     configTime(0, 0, "192.168.1.1", "time.nist.gov");
     Serial.println("NTP initialized, waiting for time...");
-    // Ждём до 10 секунд, чтобы получить время (не блокируем надолго)
+    // Ждём до 10 секунд, чтобы получить время
     time_t now = time(nullptr);
     int syncAttempts = 0;
     while (now < 100000 && syncAttempts < 20) {
@@ -564,10 +568,11 @@ void connectToWiFi() {
       syncAttempts++;
     }
     if (now > 100000) {
-      Serial.println("Initial time sync successful");
-    } else {
-      Serial.println("Initial time sync failed, will retry in loop");
-    }
+    Serial.println("Initial time sync successful");
+    lastHistoryUpdate = millis() - HISTORY_INTERVAL + 15000;  // ПЕРВЫЙ ИНТЕРВАЛ ЧЕРЕЗ 30 СЕКУНД
+} else {
+    Serial.println("Initial time sync failed, will retry in loop");
+}
   } else {
     Serial.println("\nWiFi failed. Entering AP mode.");
     startConfigMode();
@@ -668,7 +673,7 @@ String getHTMLPage() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="shortcut icon" href="data:image/x-icon;base64,AAABAAEAEBAAAAEAIABoBAAAFgAAACgAAAAQAAAAIAAAAAEAIAAAAAAAAAQAAMMOAADDDgAAAAAAAAAAAAAAAAAAAAAAALKYXwC/qnsAuqJvGcCrfGLDr4OBv6p7WLmhbRK8pHMArJBVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL+pegC/qXoAvad2Kcy6lL3d0bn649nF/9vPtfjJt5CruqNwLMCqfE/Dr4NywKt9V7qibxfBrH8AsphfAAAAAAC/qXoAr5NYBsi2jqTl3Mr/8Org//Dq4P/w6uD/4tjE/c28l+Lc0Lf449nG/97SuvzMu5bCvqd3Lb+qewAAAAAAv6l5ALigbB/UxaXf7+nd/+/p3v/v6d7/7+ne/+/p3f/s5dj/7+rf//Dq4P/w6uD/5t3M/8q3kKuzmWEKy7mTALukcyDBq31+18ms9O/p3v/v6d7/7+ne/+/p3v/v6d7/7+ne/+/p3f/s5dj/7ebZ/+/p3v/WyKrmuqNwL76oeDrOvZrN4dbA/+vj1f/v6t//7+nf/+/p3//v6t//7+ne//Dq3//t5tn/0sKi/93Ruf/w6t//2Mqt6rukcjTJt4/A597N//Dr4f/r49X/2s2z/9rNsv/r49X/5NrH/9jKrf/f1L7/7OXZ/9fJq//cz7b/6+TX/827lsi2nWcU08Oj+O7o3f/v6d7/2cyx/9/TvP/l28j/5dvJ/9XGqP/m3cv/18ms/+HWwP/Xyav/4NW//+vk1v/QwJ7gv6l6SNHBn+/u59v/7+ne/9jLrv/i2MP/6eHR/+Xcyv/Vx6j/6uLT/9nLr//j2cT/7+ne/+/p3v/v6t//6eHR/8u5k87FsYeY4NW+/e/q3//o4ND/18ms/9fJrf/p4dL/4NbA/9XHqP/cz7b/7efa/+/p3v/v6d7/7+ne/+/p3f/TxKT6u6RyGMezipTWyKru6uLT/+/p3v/u6N3/7+nf/+/p3//u6Nz/7+ne/+/p3v/v6d//7+nf//Dq3//s5dj/zr2Z4reeaQCqjU4Evqd3ZN3Rufvw6uD/7+ne/+/p3v/v6d7/7+ne/+/p3v/v6d7/6+PV/+ri1P/p4dH/18ms8MKtgG4AAAAAv6l6ALqibx/RwaDZ7efa/+/p3//v6d7/7+ne/+/p3v/v6d//7OXY/9DAnuHKt5CxybePpsCrfVG4n2sGAAAAAL+pegD59vIAwq6BbNrNsvfu59v/8Org//Dq3//w6uD/7eba/9jKrvPBrH5eflMAAp19OAPHsGsATycAAAAAAAAAAAAAvKV0ALefagfDroJu0sOj3t/Uvvzj2cb/39O8+9HBoNnCrYBktZxmBbyldAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACzmWEArZFVArukcSvBrH5qw6+Dg8GrfWe6o3Amp4pKAbKXXwAAAAAAAAAAAAAAAAAAAAAA8H8AAOADAADAAQAAwAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAwAAAAOADAADgDwAA8B8AAA==" />    <title>Air Monitor</title>
+    <link rel="shortcut icon" href="data:image/x-icon;base64,AAABAAEAEBAAAAEAIABoBAAAFgAAACgAAAAQAAAAIAAAAAEAIAAAAAAAAAQAAMMOAADDDgAAAAAAAAAAAAAAAAAAAAAAALKYXwC/qnsAuqJvGcCrfGLDr4OBv6p7WLmhbRK8pHMArJBVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL+pegC/qXoAvad2Kcy6lL3d0bn649nF/9vPtfjJt5CruqNwLMCqfE/Dr4NywKt9V7qibxfBrH8AsphfAAAAAAC/qXoAr5NYBsi2jqTl3Mr/8Org//Dq4P/w6uD/4tjE/c28l+Lc0Lf449nG/97SuvzMu5bCvqd3Lb+qewAAAAAAv6l5ALigbB/UxaXf7+nd/+/p3v/v6d7/7+ne/+/p3f/s5dj/7+rf//Dq4P/w6uD/5t3M/8q3kKuzmWEKy7mTALukcyDBq31+18ms9O/p3v/v6d7/7+ne/+/p3v/v6d7/7+ne/+/p3f/s5dj/7ebZ/+/p3v/WyKrmuqNwL76oeDrOvZrN4dbA/+vj1f/v6t//7+nf/+/p3//v6t//7+ne//Dq3//t5tn/0sKi/93Ruf/w6t//2Mqt6rukcjTJt4/A597N//Dr4f/r49X/2s2z/9rNsv/r49X/5NrH/9jKrf/f1L7/7OXZ/9fJq//cz7b/6+TX/827lsi2nWcU08Oj+O7o3f/v6d7/2cyx/9/TvP/l28j/5dvJ/9XGqP/m3cv/18ms/+HWwP/Xyav/4NW//+vk1v/QwJ7gv6l6SNHBn+/u59v/7+ne/9jLrv/i2MP/6eHR/+Xcyv/Vx6j/6uLT/9nLr//j2cT/7+ne/+/p3v/v6t//6eHR/8u5k87FsYeY4NW+/e/q3//o4ND/18ms/9fJrf/p4dL/4NbA/9XHqP/cz7b/7efa/+/p3v/v6d7/7+ne/+/p3f/TxKT6u6RyGMezipTWyKru6uLT/+/p3v/u6N3/7+nf/+/p3//u6Nz/7+ne/+/p3v/v6d//7+nf//Dq3//t5dj/zr2Z4reeaQCqjU4Evqd3ZN3Rufvw6uD/7+ne/+/p3v/v6d7/7+ne/+/p3v/v6d7/6+PV/+ri1P/p4dH/18ms8MKtgG4AAAAAv6l6ALqibx/RwaDZ7efa/+/p3//v6d7/7+ne/+/p3v/v6d//7OXY/9DAnuHKt5CxybePpsCrfVG4n2sGAAAAAL+pegD59vIAwq6BbNrNsvfu59v/8Org//Dq3//w6uD/7eba/9jKrvPBrH5eflMAAp19OAPHsGsATycAAAAAAAAAAAAAvKV0ALefagfDroJu0sOj3t/Uvvzj2cb/39O8+9HBoNnCrYBktZxmBbyldAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACzmWEArZFVArukcSvBrH5qw6+Dg8GrfWe6o3Amp4pKAbKXXwAAAAAAAAAAAAAAAAAAAAAA8H8AAOADAADAAQAAwAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAwAAAAOADAADgDwAA8B8AAA==" />    <title>Air Monitor</title>
     <style>
         * {
             margin: 0;
@@ -1250,14 +1255,14 @@ void loop() {
 
   readSensor();
 
-  // Каждые 5 минут обновляем историю и синхронизируем время
+  // Каждые 5 минут обновляем историю, синхронизируем время и СОХРАНЯЕМ ДАННЫЕ
   if (millis() - lastHistoryUpdate >= HISTORY_INTERVAL) {
     time_t now = time(nullptr);
 
     // Если время ещё не синхронизировано, инициируем NTP-запрос
     if (now < 100000) {
       Serial.println("Time not valid, requesting NTP sync...");
-      configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+      configTime(0, 0, "192.168.1.1", "time.nist.gov");
     } else {
       // Время валидно – если история ещё не загружена, загружаем её
       if (!historyLoaded) {
@@ -1274,7 +1279,10 @@ void loop() {
         addToHistory(tempHistory, tempIndex, tempCount, avgTemp, now);
         addToHistory(humHistory, humIndex, humCount, avgHum, now);
 
-        Serial.println("History updated with averaged values.");
+        // СОХРАНЯЕМ ИСТОРИЮ КАЖДЫЕ 5 МИНУТ
+        saveHistoryToFS();
+
+        Serial.println("History updated and saved.");
       }
     }
 
@@ -1312,12 +1320,7 @@ void loop() {
     pressStart = 0;
   }
 
-  // Сохранение истории в LittleFS раз в час
-  static unsigned long lastFSSave = 0;
-  if (millis() - lastFSSave >= 3600000) {
-    saveHistoryToFS();
-    lastFSSave = millis();
-  }
+  // БЛОК СОХРАНЕНИЯ РАЗ В ЧАС УДАЛЁН
 
   delay(1000);
 }
